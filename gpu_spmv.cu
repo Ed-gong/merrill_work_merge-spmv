@@ -385,6 +385,9 @@ float TestGpuMergeCsrmv(
     // Allocate temporary storage
     size_t temp_storage_bytes = 0;
     void *d_temp_storage = NULL;
+    GpuTimer timer;
+
+    timer.Start();
 
     // Get amount of temporary storage needed
     CubDebugExit(DeviceSpmv::CsrMV(
@@ -393,6 +396,9 @@ float TestGpuMergeCsrmv(
         params.d_vector_x, params.d_vector_y,
         params.num_rows, params.num_cols, params.num_nonzeros,
         (cudaStream_t) 0, false));
+    
+    timer.Stop();
+    cout << "setup " << timer.ElapsedMillis() << endl;
 
     // Allocate
     CubDebugExit(g_allocator.DeviceAllocate(&d_temp_storage, temp_storage_bytes));
@@ -401,12 +407,16 @@ float TestGpuMergeCsrmv(
     CubDebugExit(cudaMemcpy(params.d_vector_y, vector_y_in, sizeof(ValueT) * params.num_rows, cudaMemcpyHostToDevice));
 
     // Warmup
+    timer.Start();
     CubDebugExit(DeviceSpmv::CsrMV(
         d_temp_storage, temp_storage_bytes,
         params.d_values, params.d_row_end_offsets, params.d_column_indices,
         params.d_vector_x, params.d_vector_y,
         params.num_rows, params.num_cols, params.num_nonzeros, 
         (cudaStream_t) 0, !g_quiet));
+    
+    timer.Stop();
+    cout << "warmup " << timer.ElapsedMillis() << endl;
 
     if (!g_quiet)
     {
@@ -415,7 +425,6 @@ float TestGpuMergeCsrmv(
     }
 
     // Timing
-    GpuTimer timer;
     float elapsed_ms = 0.0;
 
     timer.Start();
@@ -484,21 +493,65 @@ template <
 void RunTest(
     ValueT                      alpha,
     ValueT                      beta,
-    CooMatrix<ValueT, OffsetT>& coo_matrix,
+    const string&               full_path,
+    //CooMatrix<ValueT, OffsetT>& coo_matrix,
     int                         timing_iterations,
     CommandLineArgs&            args)
 {
+
+    // Convert to CSR
+    ////////////////////// add the new read file ////////////////////
+    OffsetT  v_count = 0;
+    OffsetT  e_count = 0;
+    OffsetT  dst_size = 0;
+    OffsetT* offset = 0;
+    OffsetT* nebrs = 0;
+    ValueT* value = 0;
+    OffsetT  flag = 0;
+    OffsetT  direction = 0;
+    //CsrMatrix<ValueT, OffsetT> csr_matrix(coo_matrix);
+    string name = full_path + "_graph_noeid.info";
+    FILE* fname = fopen(name.c_str(), "r");
+    fscanf(fname, "v_count=%u\n e_count=%u\n dst_size=%u\n direction=%lu\n", &v_count, &e_count, &dst_size, &direction);
+    fclose(fname);
+
+    // allocate the offset, nebr and values
+    offset = (OffsetT*)calloc(sizeof(OffsetT), v_count + 1);
+    nebrs = (OffsetT*)calloc(sizeof(OffsetT), e_count);
+    value = (ValueT*)calloc(sizeof(ValueT), e_count);
+    for (int i = 0; i < e_count; ++i) {
+            value[i] = 1.0;
+    }
+    // read offset
+    name = full_path + "_csr_noeid.offset";
+    fname = fopen(name.c_str(), "rb");
+    fread(offset, sizeof(OffsetT), v_count+1, fname);
+    fclose(fname);
+    
+    //read nebrs
+    name = full_path + "_csr_noeid.nebrs";
+    fname = fopen(name.c_str(), "rb");
+    fread(nebrs, sizeof(OffsetT), e_count, fname);
+    fclose(fname);
+    // init strut CsrMatrix
+    CsrMatrix<ValueT, OffsetT> csr_matrix;
+    csr_matrix.num_rows = v_count;
+    csr_matrix.num_cols = v_count;
+    csr_matrix.num_nonzeros = e_count;
+    csr_matrix.row_offsets = offset;
+    csr_matrix.column_indices = nebrs;
+    csr_matrix.values = value;
+    //cout << "graph info" << "v_count: " << v_count <<" "<<e_count << " " << offset[v_count] << " "<< nebrs[e_count - 1]<< endl;
+    ////////////////////// end the new add file //////////////////// 
     // Adaptive timing iterations: run 16 billion nonzeros through
+    timing_iterations = 1;
     if (timing_iterations == -1)
-        timing_iterations = std::min(50000ull, std::max(100ull, ((16ull << 30) / coo_matrix.num_nonzeros)));
+        timing_iterations = std::min(50000ull, std::max(100ull, ((16ull << 30) / e_count)));
 
     if (!g_quiet)
         printf("\t%d timing iterations\n", timing_iterations);
-
-    // Convert to CSR
-    CsrMatrix<ValueT, OffsetT> csr_matrix(coo_matrix);
-    if (!args.CheckCmdLineFlag("csrmv"))
-        coo_matrix.Clear();
+    //if (!args.CheckCmdLineFlag("csrmv"))
+        //coo_matrix.Clear();
 
     // Display matrix info
     csr_matrix.Stats().Display(!g_quiet);
@@ -607,6 +660,7 @@ void RunTests(
     CommandLineArgs&    args)
 {
     // Initialize matrix in COO form
+    /*
     CooMatrix<ValueT, OffsetT> coo_matrix;
 
     if (!mtx_filename.empty())
@@ -653,12 +707,12 @@ void RunTests(
     {
         fprintf(stderr, "No graph type specified.\n");
         exit(1);
-    }
+    }*/
 
-    RunTest(
+    RunTest<ValueT, OffsetT>(
         alpha,
         beta,
-        coo_matrix,
+        mtx_filename,
         timing_iterations,
         args);
 }
@@ -700,6 +754,7 @@ int main(int argc, char **argv)
 
     bool                fp32;
     std::string         mtx_filename;
+    std::string         save_name;
     int                 grid2d              = -1;
     int                 grid3d              = -1;
     int                 wheel               = -1;

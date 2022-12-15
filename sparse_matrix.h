@@ -769,7 +769,9 @@ struct CsrMatrix
     {
         Init(coo_matrix, verbose);
     }
+    CsrMatrix(){
 
+    }
 
     /**
      * Destructor
